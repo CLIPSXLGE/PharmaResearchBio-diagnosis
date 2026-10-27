@@ -301,10 +301,10 @@ function score(){
   return s;
 }
 let sending=false;
-function setSt(cls,html){ const e=$("#sendst"); e.className="sendst show "+cls; e.innerHTML=html; const b=e.querySelector("button"); if(b) b.onclick=send; }
+function setSt(cls,html){ const e=$("#sendst"); e.className=cls?"sendst show "+cls:"sendst"; e.innerHTML=html; const b=e.querySelector("button"); if(b) b.onclick=send; }
 async function send(){
   if(!SHEET_URL){ $("#sendst").className="sendst"; return; }
-  if(state.sent){ setSt("ok","✔ 결과가 제출되었습니다"); return; }
+  if(state.sent){ setSt("",""); return; }
   if(sending) return; sending=true;
   setSt("ing","결과를 제출하는 중입니다…");
   const s=score(), vals=[...new Set(KEYS.map(k=>s[k]))].sort((a,b)=>b-a);
@@ -318,7 +318,7 @@ async function send(){
     clearTimeout(t);
     const j=await r.json();
     if(!j.ok) throw new Error(j.error||"fail");
-    state.sent=true; save(); setSt("ok","✔ 결과가 제출되었습니다");
+    state.sent=true; save(); setSt("","");
   }catch(e){
     setSt("err","제출에 실패했습니다. 네트워크를 확인하고 <button>다시 시도</button>");
   }finally{ sending=false; }
