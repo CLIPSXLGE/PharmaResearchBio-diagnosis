@@ -92,6 +92,11 @@ textarea{min-height:84px;resize:vertical}
 .sendst.ing{background:#f1f3f2;color:var(--sub)}
 .sendst.err{background:#fff0f0;color:#b3261e}
 .sendst button{margin-left:8px;font:inherit;font-weight:700;border:1px solid currentColor;background:#fff;color:inherit;border-radius:8px;padding:4px 12px;cursor:pointer}
+.ov{display:none;position:fixed;inset:0;background:rgba(10,30,18,.78);z-index:50;overflow:auto;-webkit-overflow-scrolling:touch}
+.ov.on{display:block}
+.ov-in{max-width:460px;margin:0 auto;padding:20px 16px calc(24px + env(safe-area-inset-bottom))}
+.ov-in img{width:100%;border-radius:12px;display:block;background:#fff}
+.ov-t{color:#fff;text-align:center;margin:14px 0}
 .who{color:var(--g-600);font-weight:700;font-size:14px;margin:0 2px 8px}
 .stack>*+*{margin-top:18px}
 table.t{width:100%;border-collapse:collapse;font-size:14px}
@@ -187,13 +192,23 @@ table.t th{background:var(--g-50);color:var(--g-900)}
 
   <div class="sendst" id="sendst"></div>
   <div class="row noprint">
-    <button class="btn primary" id="print">결과 인쇄 / PDF 저장</button>
+    <button class="btn primary" id="saveimg">결과 이미지로 저장</button>
     <button class="btn ghost" id="retry">다시 진단하기</button>
   </div>
-  <div class="foot">출처: Thomas &amp; Kilmann (1959), 한국갈등해결센터 (2018) · 파마리서치바이오 갈등관리 리더십 교재</div>
+  <div class="foot">출처: Thomas &amp; Kilmann (1959), 한국갈등해결센터 (2018)</div>
 </section>
 
 </main>
+<div class="ov" id="ov">
+  <div class="ov-in">
+    <img id="ovimg" alt="진단 결과 이미지">
+    <p class="ov-t">이미지를 길게 눌러 <b>사진에 저장</b>하세요</p>
+    <div class="row">
+      <a class="btn primary" id="ovdl" download="갈등대처유형_결과.png" style="text-align:center;text-decoration:none">이미지 다운로드</a>
+      <button class="btn ghost" id="ovclose">닫기</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* 문항: 각 선택지에 매핑된 유형 (교재 채점표 기준)
@@ -312,16 +327,23 @@ async function send(){
   const body={id:state.id,ts:new Date().toISOString(),name:state.name,
     경쟁:s.C,수용:s.A,회피:s.V,타협:s.P,협력:s.L,
     주유형:names(vals[0]),부유형:vals.length>1?names(vals[1]):"",answers:state.ans.join("")};
-  try{
-    const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(),15000);
-    const r=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify(body),signal:ctl.signal});
-    clearTimeout(t);
-    const j=await r.json();
-    if(!j.ok) throw new Error(j.error||"fail");
-    state.sent=true; save(); setSt("","");
-  }catch(e){
-    setSt("err","제출에 실패했습니다. 네트워크를 확인하고 <button>다시 시도</button>");
-  }finally{ sending=false; }
+  const wait=ms=>new Promise(r=>setTimeout(r,ms));
+  // 동시 제출이 몰려도 서버가 처리할 수 있도록 무작위 지연 후 전송, 실패 시 최대 5회 재시도(점점 길게 대기)
+  await wait(Math.random()*3000);
+  let ok=false;
+  for(let n=0;n<5&&!ok;n++){
+    try{
+      const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(),30000);
+      const r=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify(body),signal:ctl.signal});
+      clearTimeout(t);
+      const j=await r.json();
+      ok=!!j.ok;
+    }catch(e){ ok=false; }
+    if(!ok) await wait(2000*Math.pow(2,n)+Math.random()*2000);
+  }
+  if(ok){ state.sent=true; save(); setSt("",""); }
+  else setSt("err","제출에 실패했습니다. 네트워크를 확인하고 <button>다시 시도</button>");
+  sending=false;
 }
 function finish(){
   if(answered()<30){
@@ -359,8 +381,74 @@ $("#start").onclick = ()=>{
 $("#resume").onclick = ()=>{ state.name = $("#name").value.trim() || state.name; save(); if(answered()===30){renderResult();show("result");send();} else {renderQ();show("quiz");} };
 $("#prev").onclick = ()=>go(-1);
 $("#next").onclick = ()=>go(1);
-$("#print").onclick = ()=>window.print();
-$("#retry").onclick = ()=>{ if(confirm("현재 결과를 지우고 처음부터 다시 진단할까요?")){ state={name:state.name,ans:Array(30).fill(null),i:0,id:newId(),sent:false}; save(); $("#name").value=state.name; show("intro"); initIntro(); } };
+$("#saveimg").onclick = saveImage;
+$("#ovclose").onclick = ()=>{ $("#ov").classList.remove("on"); };
+function rr(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+async function drawResult(){
+  try{ await document.fonts.ready; }catch(e){}
+  const s=score(), vals=[...new Set(KEYS.map(k=>s[k]))].sort((a,b)=>b-a);
+  const max=vals[0], second=vals.length>1?vals[1]:null;
+  const tops=KEYS.filter(k=>s[k]===max), secs=second===null?[]:KEYS.filter(k=>s[k]===second);
+  const W=1080,H=1540,F='"Pretendard","Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif';
+  const cv=document.createElement("canvas"); cv.width=W; cv.height=H; const c=cv.getContext("2d");
+  c.fillStyle="#f6f9f6"; c.fillRect(0,0,W,H);
+  const T=(t,x,y,size,color,w="700",al="left")=>{ c.font=w+" "+size+"px "+F; c.fillStyle=color; c.textAlign=al; c.textBaseline="alphabetic"; c.fillText(t,x,y); };
+  // header
+  let g=c.createLinearGradient(60,60,124,124); g.addColorStop(0,"#4cb848"); g.addColorStop(1,"#1f7a3a");
+  rr(c,60,60,64,64,18); c.fillStyle=g; c.fill(); T("P",92,105,36,"#fff","800","center");
+  T("파마리서치바이오",140,104,38,"#2e9e3f","800");
+  T("갈등 대처 유형 진단",W-60,102,28,"#5b6b60","500","right");
+  T((state.name?state.name+" 님의 ":"나의 ")+"갈등 대처 유형",60,200,36,"#2e9e3f");
+  // 주 유형
+  g=c.createLinearGradient(60,240,1020,500); g.addColorStop(0,"#1f7a3a"); g.addColorStop(1,"#4cb848");
+  rr(c,60,240,960,260,32); c.fillStyle=g; c.fill();
+  rr(c,100,274,150,48,24); c.fillStyle="rgba(255,255,255,.22)"; c.fill(); T("주 유형",175,307,28,"#fff","800","center");
+  T(tops.map(k=>MODES[k].name).join(" · "),100,398,78,"#fff","800");
+  T(tops.map(k=>MODES[k].en).join(" · "),100,446,30,"rgba(255,255,255,.88)","500");
+  T(max+" / 12점",W-100,458,34,"#fff","800","right");
+  // 부 유형
+  rr(c,60,530,960,260,32); c.fillStyle="#fff4e0"; c.fill(); c.strokeStyle="#fde3b0"; c.lineWidth=2; c.stroke();
+  rr(c,100,564,150,48,24); c.fillStyle="#f59e0b"; c.fill(); T("부 유형",175,597,28,"#fff","800","center");
+  if(secs.length){
+    T(secs.map(k=>MODES[k].name).join(" · "),100,688,78,"#b45f06","800");
+    T(secs.map(k=>MODES[k].en).join(" · "),100,736,30,"#8a5a1d","500");
+    T(second+" / 12점",W-100,748,34,"#b45f06","800","right");
+  } else T("해당 없음",100,688,60,"#b45f06","800");
+  // 점수
+  rr(c,60,820,960,590,32); c.fillStyle="#fff"; c.fill(); c.strokeStyle="#dbe5dc"; c.stroke();
+  T("유형별 점수",100,892,40,"#1c2a21","800");
+  [...KEYS].sort((a,b)=>s[b]-s[a]).forEach((k,i)=>{
+    const y=940+i*88, isMain=s[k]===max, isSec=s[k]===second;
+    T(MODES[k].name,100,y+34,34,"#1c2a21","700");
+    rr(c,230,y,650,46,14); c.fillStyle="#e8f6e6"; c.fill();
+    const w=Math.max(0,650*s[k]/12);
+    if(w>0){ rr(c,230,y,Math.max(w,28),46,14); c.fillStyle=isMain?"#3aa944":(isSec?"#f59e0b":"#cfeccb"); c.fill(); }
+    T(String(s[k]),980,y+36,36,isSec&&!isMain?"#b45f06":"#1f7a3a","800","right");
+  });
+  const d=new Date();
+  T(d.getFullYear()+"."+String(d.getMonth()+1).padStart(2,"0")+"."+String(d.getDate()).padStart(2,"0"),W/2,1466,26,"#5b6b60","500","center");
+  T("출처: Thomas & Kilmann (1959), 한국갈등해결센터 (2018)",W/2,1504,24,"#8a978d","500","center");
+  return new Promise(r=>cv.toBlob(r,"image/png"));
+}
+async function saveImage(){
+  const btn=$("#saveimg"); btn.disabled=true;
+  try{
+    const blob=await drawResult();
+    const file=new File([blob],"갈등대처유형_결과.png",{type:"image/png"});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file]}); return; }
+      catch(e){ if(e&&e.name==="AbortError") return; }
+    }
+    const url=URL.createObjectURL(blob);
+    $("#ovimg").src=url; $("#ovdl").href=url; $("#ov").classList.add("on");
+  }catch(e){ alert("이미지를 만들지 못했습니다. 다시 시도해 주세요."); }
+  finally{ btn.disabled=false; }
+}
+$("#retry").onclick = async ()=>{
+  // 이전 결과가 아직 시트에 전송되지 않았다면 먼저 전송 (새 진단은 새 ID라 이전 행은 그대로 남음)
+  if(answered()===30 && !state.sent){ await send(); if(!state.sent){ alert("이전 결과가 아직 제출되지 않았습니다. 네트워크를 확인하고 ‘다시 시도’를 눌러 제출한 뒤 다시 진단해 주세요."); return; } }
+  if(confirm("처음부터 다시 진단할까요?")){ state={name:state.name,ans:Array(30).fill(null),i:0,id:newId(),sent:false}; save(); $("#name").value=state.name; $("#sendst").className="sendst"; show("intro"); initIntro(); }
+};
 document.addEventListener("keydown",e=>{
   if(!$("#v-quiz").classList.contains("on")) return;
   if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
